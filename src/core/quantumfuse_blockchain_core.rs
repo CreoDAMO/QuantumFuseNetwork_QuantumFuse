@@ -52,6 +52,7 @@ use evm::{executor::StackExecutor, Config, backend::MemoryBackend};
 
 #[derive(Error, Debug)]
 pub enum SystemError {
+    // Quantum RNG Errors
     #[error("QRNG device error: {0}")]
     QRNGError(String),
     #[error("Entropy analysis error: {0}")]
@@ -63,6 +64,7 @@ pub enum SystemError {
     #[error("Lock acquisition failure")]
     QRNGLockError,
 
+    // Blockchain Core Errors
     #[error("Block validation failed: {0}")]
     BlockchainValidationError(String),
     #[error("Shard execution error: {0}")]
@@ -80,6 +82,7 @@ pub enum SystemError {
     #[error("Deserialization error: {0}")]
     BlockchainDeserializationError(String),
 
+    // Quantum Finance (QFC) Errors
     #[error("Insufficient balance for account {account_id}. Required: {required}, Available: {available}")]
     QFCInsufficientBalance {
         account_id: String,
@@ -89,6 +92,7 @@ pub enum SystemError {
     #[error("Invalid transaction")]
     QFCInvalidTransaction,
 
+    // Bridge Errors
     #[error("Invalid transaction: {0}")]
     BridgeInvalidTransaction(String),
     #[error("Proof verification failed: {0}")]
@@ -100,6 +104,7 @@ pub enum SystemError {
     #[error("Configuration error: {0}")]
     BridgeConfigError(String),
 
+    // State Management Errors
     #[error("Wallet not found: {0}")]
     StateWalletNotFound(String),
     #[error("Invalid transaction: {0}")]
@@ -112,22 +117,47 @@ pub enum SystemError {
     StateSerializationError(String),
     #[error("Deserialization error: {0}")]
     StateDeserializationError(String),
+
+    // Governance Errors
+    #[error("Insufficient QFC stake: required {required}, provided {provided}")]
+    GovernanceInsufficientStake {
+        required: u128,
+        provided: u128,
+    },
+    #[error("Proposal not found: {0}")]
+    GovernanceProposalNotFound(String),
+    #[error("AI analysis failed: {0}")]
+    GovernanceAiError(String),
+    #[error("ZK proof verification failed: {0}")]
+    GovernanceProofError(String),
+    #[error("Proposal is not active: {0}")]
+    GovernanceInactiveProposal(String),
+    #[error("Duplicate vote detected: {0}")]
+    GovernanceDuplicateVote(String),
+    #[error("Contract execution failed: {0}")]
+    GovernanceExecutionError(String),
+    #[error("Voting threshold not met: {threshold}% required, {actual}% achieved")]
+    GovernanceThresholdNotMet {
+        threshold: f64,
+        actual: f64,
+    },
 }
 
-// Example usage in code
-fn example_function() -> Result<(), SystemError> {
-    // Simulated error handling
-    let required_balance = 100;
-    let available_balance = 50;
-    if available_balance < required_balance {
-        return Err(SystemError::QFCInsufficientBalance {
-            account_id: "user123".to_string(),
-            required: required_balance,
-            available: available_balance,
+// Example usage with governance error
+fn process_proposal() -> Result<(), SystemError> {
+    let required_stake = 1000u128;
+    let submitted_stake = 500u128;
+    
+    if submitted_stake < required_stake {
+        return Err(SystemError::GovernanceInsufficientStake {
+            required: required_stake,
+            provided: submitted_stake,
         });
     }
 
-    Ok(())
+    // Simulate proposal lookup failure
+    let proposal_id = "invalid_id".to_string();
+    Err(SystemError::GovernanceProposalNotFound(proposal_id))
 }
 
 // --- Entropy Metrics Implementation ---
