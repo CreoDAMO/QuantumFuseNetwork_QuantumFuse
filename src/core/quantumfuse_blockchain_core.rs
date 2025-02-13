@@ -133,73 +133,63 @@ fn example_function() -> Result<(), SystemError> {
 
 #[derive(Debug)]
 pub struct EntropyMetrics {
-    pub shannon_entropy: f64,
-    pub min_entropy: f64,
-    pub collision_entropy: f64,
-    pub last_health_check: DateTime<Utc>,
+    pub shannon: f64,
+    pub min: f64,
+    pub collision: f64,
+    pub last_check: DateTime<Utc>,
 }
 
 impl EntropyMetrics {
-    pub fn calculate(&self, data: &[u8]) -> Result<Self, QRNGError> {
-        let shannon = self.calculate_shannon_entropy(data);
-        let min_entropy = self.calculate_min_entropy(data);
-        let collision = self.calculate_collision_entropy(data);
-        
+    pub fn analyze(data: &[u8]) -> Result<Self, EntropyError> {
+        let total = data.len() as f64;
+        if total == 0.0 {
+            return Err(EntropyError::EmptyData);
+        }
+
+        // Single pass frequency analysis
+        let (freq_map, max_count) = data.iter()
+            .fold((HashMap::new(), 0), |(mut map, mut max), &b| {
+                let count = map.entry(b).and_modify(|c| *c += 1).or_insert(1);
+                if *count > max {
+                    max = *count;
+                }
+                (map, max)
+            });
+
+        // Convert to probability space
+        let probs: Vec<f64> = freq_map.values()
+            .map(|&c| c as f64 / total)
+            .collect();
+
+        // Parallel entropy calculations
+        let (shannon, collision, min) = probs.iter()
+            .fold((0.0, 0.0, 0.0), |(s, c, _), p| {
+                let log_p = p.log2();
+                (
+                    s - p * log_p,
+                    c + p.powi(2),
+                    // Min entropy tracked separately
+                    f64::NEG_INFINITY
+                )
+            });
+
+        // Calculate min entropy from precomputed max probability
+        let max_prob = max_count as f64 / total;
+        let min_entropy = -max_prob.log2();
+
         Ok(Self {
-            shannon_entropy: shannon,
-            min_entropy: min_entropy,
-            collision_entropy: collision,
-            last_health_check: Utc::now(),
+            shannon,
+            min: min_entropy,
+            collision: -collision.log2(),
+            last_check: Utc::now(),
         })
     }
+}
 
-    fn calculate_shannon_entropy(&self, data: &[u8]) -> f64 {
-        let mut frequency = [0u32; 256];
-        for &byte in data {
-            frequency[byte as usize] += 1;
-        }
-
-        let len = data.len() as f64;
-        frequency.iter()
-            .filter(|&&count| count > 0)
-            .map(|&count| {
-                let probability = count as f64 / len;
-                -probability * probability.log2()
-            })
-            .sum()
-    }
-
-    fn calculate_min_entropy(&self, data: &[u8]) -> f64 {
-        let mut frequency = [0u32; 256];
-        for &byte in data {
-            frequency[byte as usize] += 1;
-        }
-
-        let len = data.len() as f64;
-        let max_probability = frequency.iter()
-            .map(|&count| count as f64 / len)
-            .max_by(|a, b| a.partial_cmp(b).unwrap())
-            .unwrap_or(0.0);
-
-        -max_probability.log2()
-    }
-
-    fn calculate_collision_entropy(&self, data: &[u8]) -> f64 {
-        let mut frequency = [0u32; 256];
-        for &byte in data {
-            frequency[byte as usize] += 1;
-        }
-
-        let len = data.len() as f64;
-        -frequency.iter()
-            .filter(|&&count| count > 0)
-            .map(|&count| {
-                let probability = count as f64 / len;
-                probability * probability
-            })
-            .sum::<f64>()
-            .log2()
-    }
+#[derive(Debug, thiserror::Error)]
+pub enum EntropyError {
+    #[error("Cannot calculate entropy for empty dataset")]
+    EmptyData,
 }
 
 // --- AI// --- AI-Powered Quantum Governance System ---
