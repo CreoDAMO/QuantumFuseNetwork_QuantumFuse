@@ -692,7 +692,7 @@ impl TelemetryReporter {
 // --- Consensus Mechanism Implementation ---
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub enum ConsensusType {
+pub enum ConsensusAlgorithm {
     QPoW,
     QPoS,
     QDPoS,
@@ -708,6 +708,7 @@ pub enum ConsensusType {
 #[derive(Debug)]
 pub struct QPoW {
     difficulty: u64,
+    new_hope: NewHope,
     metrics: Arc<RwLock<ConsensusMetrics>>,
 }
 
@@ -715,47 +716,28 @@ impl QPoW {
     pub fn new(difficulty: u64) -> Self {
         Self {
             difficulty,
+            new_hope: NewHope::new(),
             metrics: Arc::new(RwLock::new(ConsensusMetrics::default())),
         }
     }
 
-    pub async fn mine_block(
-        &self,
-        transactions: Vec<QuantumTransaction>,
-        miner: &Wallet,
-    ) -> Result<QuantumBlock, ConsensusError> {
+    pub async fn mine_block(&self, transactions: Vec<QuantumTransaction>, miner: &Wallet) -> Result<QuantumBlock, ConsensusError> {
         let mut block = QuantumBlock::new(
             self.metrics.read().await.blocks_mined + 1,
-            self.get_previous_block_hash()?,
+            self.new_hope.generate_public_key(),
             transactions,
         );
 
-        loop {
-            let nonce = self.generate_nonce();
-            block.header.nonce = nonce;
-            let hash = block.calculate_hash();
+        // Perform proof-of-work
+        let proof = self.new_hope.proof_of_work(&block, self.difficulty).await?;
+        block.proof = proof;
 
-            if hash < self.difficulty_target() {
-                // Found a valid block
-                block.header.validator = miner.address.clone();
-                block.header.signature = miner.sign_block(&block)?;
-                return Ok(block);
-            }
+        // Verify proof-of-work
+        if !self.new_hope.verify_proof_of_work(&block, self.difficulty) {
+            return Err(ConsensusError::InvalidProofOfWork);
         }
-    }
 
-    fn difficulty_target(&self) -> Hash {
-        // ... Calculate the target hash based on the difficulty ...
-    }
-
-    fn generate_nonce(&self) -> u64 {
-        // Random number generation logic for nonce
-        rand::thread_rng().gen()
-    }
-
-    fn get_previous_block_hash(&self) -> Result<Hash, ConsensusError> {
-        // Fetch previous block hash from the blockchain
-        // Implement logic to retrieve the last block's hash
+        Ok(block)
     }
 }
 
@@ -763,73 +745,326 @@ impl QPoW {
 
 #[derive(Debug)]
 pub struct QPoS {
-    validators: Vec<Validator>,
-    total_stake: f64,
+    stake_threshold: u64,
+    frodo_kem: FrodoKEM,
     metrics: Arc<RwLock<ConsensusMetrics>>,
 }
 
 impl QPoS {
-    pub fn new(validators: Vec<Validator>) -> Self {
+    pub fn new(stake_threshold: u64) -> Self {
         Self {
-            validators,
-            total_stake: 0.0,
+            stake_threshold,
+            frodo_kem: FrodoKEM::new(),
             metrics: Arc::new(RwLock::new(ConsensusMetrics::default())),
         }
     }
 
-    pub async fn mine_block(
-        &self,
-        transactions: Vec<QuantumTransaction>,
-        miner: &Wallet,
-    ) -> Result<QuantumBlock, ConsensusError> {
-        let selected_validator = self.select_validator();
+    pub async fn mine_block(&self, transactions: Vec<QuantumTransaction>, miner: &Wallet) -> Result<QuantumBlock, ConsensusError> {
+        let mut block = QuantumBlock::new(
+            self.metrics.read().await.blocks_mined + 1,
+            self.frodo_kem.generate_public_key(),
+            transactions,
+        );
+
+        // Perform proof-of-stake
+        let proof = self.frodo_kem.proof_of_stake(&block, self.stake_threshold).await?;
+        block.proof = proof;
+
+        // Verify proof-of-stake
+        if !self.frodo_kem.verify_proof_of_stake(&block, self.stake_threshold) {
+            return Err(ConsensusError::InvalidProofOfStake);
+        }
+
+        Ok(block)
+    }
+}
+
+// --- Delegated Proof of Stake (QDPoS) Implementation ---
+
+#[derive(Debug)]
+pub struct QDPoS {
+    stake_threshold: u64,
+    new_hope: NewHope,
+    metrics: Arc<RwLock<ConsensusMetrics>>,
+}
+
+impl QDPoS {
+    pub fn new(stake_threshold: u64) -> Self {
+        Self {
+            stake_threshold,
+            new_hope: NewHope::new(),
+            metrics: Arc::new(RwLock::new(ConsensusMetrics::default())),
+        }
+    }
+
+    pub async fn mine_block(&self, transactions: Vec<QuantumTransaction>, miner: &Wallet) -> Result<QuantumBlock, ConsensusError> {
+        let mut block = QuantumBlock::new(
+            self.metrics.read().await.blocks_mined + 1,
+            self.new_hope.generate_public_key(),
+            transactions,
+        );
+
+        // Perform delegated proof-of-stake
+        let proof = self.new_hope.delegated_proof_of_stake(&block, self.stake_threshold).await?;
+        block.proof = proof;
+
+        // Verify delegated proof-of-stake
+        if !self.new_hope.verify_delegated_proof_of_stake(&block, self.stake_threshold) {
+            return Err(ConsensusError::InvalidDelegatedProofOfStake);
+        }
+
+        Ok(block)
+    }
+}
+
+// --- Green Proof of Work (GPoW) Implementation ---
+
+#[derive(Debug)]
+pub struct GPoW {
+    difficulty: u64,
+    renewable_energy_validators: Vec<Validator>,
+    energy_efficiency_score: f64,
+    carbon_offset: f64,
+    metrics: Arc<RwLock<ConsensusMetrics>>,
+    config: Arc<ConsensusConfig>,
+}
+
+impl GPoW {
+    pub fn new(config: &Arc<ConsensusConfig>) -> Result<Self, ConsensusError> {
+        let metrics = Arc::new(RwLock::new(ConsensusMetrics::default()));
+
+        Ok(Self {
+            difficulty: config.gpow_difficulty,
+            renewable_energy_validators: Vec::new(),
+            energy_efficiency_score: 0.0,
+            carbon_offset: 0.0,
+            metrics,
+            config: config.clone(),
+        })
+    }
+
+    pub async fn mine_block(&self, transactions: Vec<QuantumTransaction>, miner: &Wallet) -> Result<QuantumBlock, ConsensusError> {
         let mut block = QuantumBlock::new(
             self.metrics.read().await.blocks_mined + 1,
             self.get_previous_block_hash()?,
             transactions,
         );
 
-        block.header.validator = selected_validator.address.clone();
-        block.header.signature = selected_validator.sign_block(&block)?;
+        // Select a renewable energy validator
+        let validator = self.select_renewable_validator(miner.address.clone()).await?;
+        block.header.validator = validator.address.clone();
+
+        // Verify the validator's energy efficiency
+        self.validate_validator_energy_efficiency(&validator).await?;
+
+        // Sign the block using the validator's private key
+        block.header.signature = validator.sign_block(&block)?;
+
+        // Update the energy efficiency score and carbon offset
+        self.update_energy_metrics(block.header.energy_usage);
 
         Ok(block)
     }
 
-    fn select_validator(&self) -> &Validator {
-        // Implement logic to select a validator based on stake
-        // This should include randomness to ensure fairness
-        &self.validators.choose(&mut rand::thread_rng()).unwrap()
+    async fn select_renewable_validator(
+        &self,
+        miner_address: String,
+    ) -> Result<Validator, ConsensusError> {
+        // Implement renewable energy validator selection logic
+        // Consider factors like renewable energy usage, carbon footprint, and energy efficiency
+        let validator = Validator {
+            address: miner_address,
+            stake: 1000.0,
+            public_key: vec![],
+            last_activity: Utc::now(),
+        };
+        Ok(validator)
+    }
+
+    async fn validate_validator_energy_efficiency(
+        &self,
+        validator: &Validator,
+    ) -> Result<(), ConsensusError> {
+        // Implement validator energy efficiency verification
+        // Check factors like renewable energy usage, carbon footprint, and energy efficiency
+        if validator.energy_efficiency < self.config.min_energy_efficiency {
+            return Err(ConsensusError::InsufficientEnergyEfficiency);
+        }
+        Ok(())
+    }
+
+    fn update_energy_metrics(&mut self, energy_usage: f64) {
+        // Update the energy efficiency score and carbon offset
+        self.energy_efficiency_score = calculate_energy_efficiency(energy_usage);
+        self.carbon_offset = calculate_carbon_offset(energy_usage);
     }
 
     fn get_previous_block_hash(&self) -> Result<Hash, ConsensusError> {
-        // Fetch previous block hash from the blockchain
+        // Fetch the previous block hash from the blockchain
+        Ok(Hash::from([0u8; 32]))
+    }
+}
+
+// --- QBFT (Quantum Byzantine Fault Tolerance) Implementation ---
+
+#[derive(Debug)]
+pub struct QBFT {
+    validators: Vec<Wallet>,
+}
+
+impl QBFT {
+    pub fn new(validators: Vec<Wallet>) -> Self {
+        Self { validators }
+    }
+
+    pub async fn propose_block(&self, block: QuantumBlock) -> Result<(), ConsensusError> {
+        // Implement the block proposal logic
+        // Each validator must sign the block
+        for validator in &self.validators {
+            validator.sign_block(&block).await?;
+        }
+        Ok(())
+    }
+
+    pub async fn validate_block(&self, block: &QuantumBlock) -> Result<(), ConsensusError> {
+        // Implement block validation logic
+        // Ensure that a sufficient number of validators have signed the block
+        let mut signatures = 0;
+        for validator in &self.validators {
+            if validator.verify_signature(&block).await? {
+                signatures += 1;
+            }
+        }
+        if signatures < self.validators.len() / 3 {
+            return Err(ConsensusError::InsufficientSignatures);
+        }
+        Ok(())
+    }
+}
+
+// --- HoneyBadger Implementation ---
+
+#[derive(Debug)]
+pub struct HoneyBadger {
+    participants: Vec<Wallet>,
+}
+
+impl HoneyBadger {
+    pub fn new(participants: Vec<Wallet>) -> Self {
+        Self { participants }
+    }
+
+    pub async fn propose_block(&self, block: QuantumBlock) -> Result<(), ConsensusError> {
+        // Implement the block proposal logic
+        for participant in &self.participants {
+            participant.broadcast_block(&block).await?;
+        }
+        Ok(())
+    }
+
+    pub async fn validate_block(&self, block: &QuantumBlock) -> Result<(), ConsensusError> {
+        // Implement block validation logic
+        // Ensure that a sufficient number of participants have acknowledged the block
+        let mut acknowledgments = 0;
+        for participant in &self.participants {
+            if participant.acknowledge_block(&block).await? {
+                acknowledgments += 1;
+            }
+        }
+        if acknowledgments < self.participants.len() / 2 {
+            return Err(ConsensusError::InsufficientAcknowledgments);
+        }
+        Ok(())
+    }
+}
+
+// --- Avalanche Implementation ---
+
+#[derive(Debug)]
+pub struct Avalanche {
+    validators: Vec<Wallet>,
+}
+
+impl Avalanche {
+    pub fn new(validators: Vec<Wallet>) -> Self {
+        Self { validators }
+    }
+
+    pub async fn propose_block(&self, block: QuantumBlock) -> Result<(), ConsensusError> {
+        // Implement the block proposal logic
+        for validator in &self.validators {
+            validator.vote_on_block(&block).await?;
+        }
+        Ok(())
+    }
+
+    pub async fn validate_block(&self, block: &QuantumBlock) -> Result<(), ConsensusError> {
+        // Implement block validation logic
+        // Ensure that a sufficient number of validators have voted for the block
+        let mut votes = 0;
+        for validator in &self.validators {
+            if validator.has_voted(&block).await? {
+                votes += 1;
+            }
+        }
+        if votes < self.validators.len() / 2 {
+            return Err(ConsensusError::InsufficientVotes);
+        }
+        Ok(())
     }
 }
 
 // --- Hybrid Consensus Implementation ---
 
 pub struct HybridConsensus {
-    current_mechanism: ConsensusType,
+    current_algorithm: ConsensusAlgorithm,
     qpow: QPoW,
     qpos: QPoS,
+    qdpos: QDPoS,
+    gpow: GPoW,
+    qbft: QBFT,
+    honeybadger: HoneyBadger,
+    avalanche: Avalanche,
     metrics: Arc<RwLock<ConsensusMetrics>>,
+    config: ConsensusConfig,
 }
 
 impl HybridConsensus {
     pub fn new(config: &ConsensusConfig) -> Self {
         Self {
-            current_mechanism: ConsensusType::Hybrid,
+            current_algorithm: ConsensusAlgorithm::Hybrid,
             qpow: QPoW::new(config.qpow_difficulty),
-            qpos: QPoS::new(vec![]), // Initialize with validators
+            qpos: QPoS::new(config.qpos_stake_threshold),
+            qdpos: QDPoS::new(config.qdpos_stake_threshold),
+            gpow: GPoW::new(&config)?,
+            qbft: QBFT::new(config.qbft_validators.clone()),
+            honeybadger: HoneyBadger::new(config.honeybadger_participants.clone()),
+            avalanche: Avalanche::new(config.avalanche_validators.clone()),
             metrics: Arc::new(RwLock::new(ConsensusMetrics::default())),
+            config: config.clone(),
         }
     }
 
     pub async fn validate_block(&self, block: &QuantumBlock) -> Result<bool, ConsensusError> {
-        match self.current_mechanism {
-            ConsensusType::QPoW => self.qpow.validate_block(block).await,
-            ConsensusType::QPoS => self.qpos.validate_block(block).await,
-            _ => Err(ConsensusError::BlockValidationError("Unsupported consensus type".into())),
+        match self.current_algorithm {
+            ConsensusAlgorithm::QPoW => self.qpow.validate_block(block).await,
+            ConsensusAlgorithm::QPoS => self.qpos.validate_block(block).await,
+            ConsensusAlgorithm::QDPoS => self.qdpos.validate_block(block).await,
+            ConsensusAlgorithm::GPoW => self.gpow.validate_block(block).await,
+            ConsensusAlgorithm::QBFT => self.qbft.validate_block(block).await.map(|_| true),
+            ConsensusAlgorithm::HoneyBadger => self.honeybadger.validate_block(block).await.map(|_| true),
+            ConsensusAlgorithm::Avalanche => self.avalanche.validate_block(block).await.map(|_| true),
+            ConsensusAlgorithm::Hybrid => {
+                let mut valid = true;
+                valid &= self.qpow.validate_block(block).await?;
+                valid &= self.qpos.validate_block(block).await?;
+                valid &= self.qdpos.validate_block(block).await?;
+                valid &= self.gpow.validate_block(block).await?;
+                valid &= self.qbft.validate_block(block).await.map(|_| true)?;
+                valid &= self.honeybadger.validate_block(block).await.map(|_| true)?;
+                valid &= self.avalanche.validate_block(block).await.map(|_| true)?;
+                Ok(valid)
+            }
         }
     }
 
@@ -838,28 +1073,74 @@ impl HybridConsensus {
         transactions: Vec<QuantumTransaction>,
         miner: &Wallet,
     ) -> Result<QuantumBlock, ConsensusError> {
-        match self.current_mechanism {
-            ConsensusType::QPoW => self.qpow.mine_block(transactions, miner).await,
-            ConsensusType::QPoS => self.qpos.mine_block(transactions, miner).await,
-            // Add cases for other consensus types if implemented
-            _ => Err(ConsensusError::BlockValidationError("Unsupported consensus type".into())),
+        match self.current_algorithm {
+            ConsensusAlgorithm::QPoW => self.qpow.mine_block(transactions, miner).await,
+            ConsensusAlgorithm::QPoS => self.qpos.mine_block(transactions, miner).await,
+            ConsensusAlgorithm::QDPoS => self.qdpos.mine_block(transactions, miner).await,
+            ConsensusAlgorithm::GPoW => self.gpow.mine_block(transactions, miner).await,
+            ConsensusAlgorithm::QBFT => self.qbft.propose_block(QuantumBlock::new(
+                self.metrics.read().await.blocks_mined + 1,
+                self.get_previous_block_hash()?,
+                transactions,
+            )).await,
+            ConsensusAlgorithm::HoneyBadger => self.honeybadger.propose_block(QuantumBlock::new(
+                self.metrics.read().await.blocks_mined + 1,
+                self.get_previous_block_hash()?,
+                transactions,
+            )).await.map(|_| QuantumBlock::new(
+                self.metrics.read().await.blocks_mined + 1,
+                self.get_previous_block_hash()?,
+                transactions,
+            )),
+            ConsensusAlgorithm::Avalanche => self.avalanche.propose_block(QuantumBlock::new(
+                self.metrics.read().await.blocks_mined + 1,
+                self.get_previous_block_hash()?,
+                transactions,
+            )).await.map(|_| QuantumBlock::new(
+                self.metrics.read().await.blocks_mined + 1,
+                self.get_previous_block_hash()?,
+                transactions,
+            )),
+            ConsensusAlgorithm::Hybrid => {
+                // Implement hybrid mining logic
+                let mut block = QuantumBlock::new(
+                    self.metrics.read().await.blocks_mined + 1,
+                    self.get_previous_block_hash()?,
+                    transactions,
+                );
+
+                // Mine the block using the current consensus algorithm
+                match self.current_algorithm {
+                    ConsensusAlgorithm::QPoW => self.qpow.mine_block(transactions, miner).await,
+                    ConsensusAlgorithm::QPoS => self.qpos.mine_block(transactions, miner).await,
+                    ConsensusAlgorithm::QDPoS => self.qdpos.mine_block(transactions, miner).await,
+                    ConsensusAlgorithm::GPoW => self.gpow.mine_block(transactions, miner).await,
+                    ConsensusAlgorithm::QBFT => self.qbft.propose_block(block.clone()).await.map(|_| block),
+                    ConsensusAlgorithm::HoneyBadger => self.honeybadger.propose_block(block.clone()).await.map(|_| block),
+                    ConsensusAlgorithm::Avalanche => self.avalanche.propose_block(block.clone()).await.map(|_| block),
+                    ConsensusAlgorithm::Hybrid =>
+                        Err(ConsensusError::BlockValidationError("Hybrid mining not implemented".into())),
+                }
+            }
         }
     }
 
-    pub async fn switch_mechanism(&mut self) {
+    pub fn switch_mechanism(&mut self, network_conditions: &NetworkConditions) {
         let mut metrics = self.metrics.write().await;
-        if metrics.network_load > self.config.transition_threshold &&
-           metrics.energy_consumption > self.config.high_energy_threshold {
-            self.current_mechanism = ConsensusType::QPoS;
-            self.last_switch = Utc::now();
+        if network_conditions.latency < 100 && network_conditions.node_count > 50 {
+            self.current_algorithm = ConsensusAlgorithm::QBFT;
+        } else if network_conditions.node_count > 1000 {
+            self.current_algorithm = ConsensusAlgorithm::Avalanche;
+        } else {
+            self.current_algorithm = ConsensusAlgorithm::GPoW;
         }
+    }
+
+    fn get_previous_block_hash(&self) -> Result<Hash, ConsensusError> {
+        // Fetch previous block hash from the blockchain
+        Ok(Hash::from([0u8; 32]))
     }
 }
-
-// --- Additional Consensus Algorithms ---
-
-// Implementations for QBFT, HoneyBadger, Avalanche, etc., can be added similarly,
-// ensuring they follow the same structure for block validation and mining.
 
 // 🏗️ **Blockchain Configurations**
 
