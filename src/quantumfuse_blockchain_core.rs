@@ -47,180 +47,86 @@ use ibc::core::ics04_channel::packet::Packet;
 use ibc::applications::transfer::{PrefixedDenom, MsgTransfer};
 use evm::{executor::StackExecutor, Config, backend::MemoryBackend};
 
-// --- Error Handling Definitions ---
+// --- Unified Error Handling Definitions ---
 
 #[derive(Error, Debug)]
-pub enum QRNGError {
+pub enum SystemError {
     #[error("QRNG device error: {0}")]
-    DeviceError(String),
+    QRNGError(String),
     #[error("Entropy analysis error: {0}")]
-    AnalysisError(String),
+    QRNGAnalysisError(String),
     #[error("All entropy sources failed")]
-    AllSourcesFailed,
+    QRNGAllSourcesFailed,
     #[error("Invalid configuration: {0}")]
-    ConfigError(String),
+    QRNGConfigError(String),
     #[error("Lock acquisition failure")]
-    LockError,
-}
+    QRNGLockError,
 
-#[derive(Error, Debug)]
-pub enum BlockchainError {
     #[error("Block validation failed: {0}")]
-    ValidationError(String),
+    BlockchainValidationError(String),
     #[error("Shard execution error: {0}")]
-    ShardError(String),
+    BlockchainShardError(String),
     #[error("Consensus error: {0}")]
-    ConsensusError(String),
+    BlockchainConsensusError(String),
     #[error("State transition error: {0}")]
-    StateError(String),
+    BlockchainStateError(String),
     #[error("Transaction pool error: {0}")]
-    MempoolError(String),
+    BlockchainMempoolError(String),
     #[error("Database error: {0}")]
-    DatabaseError(String),
+    BlockchainDatabaseError(String),
     #[error("Serialization error: {0}")]
-    SerializationError(String),
+    BlockchainSerializationError(String),
     #[error("Deserialization error: {0}")]
-    DeserializationError(String),
-}
+    BlockchainDeserializationError(String),
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum QFCError {
-    InsufficientBalance { account_id: String, required: u64, available: u64 },
-    InvalidTransaction,
-}
+    #[error("Insufficient balance for account {account_id}. Required: {required}, Available: {available}")]
+    QFCInsufficientBalance {
+        account_id: String,
+        required: u64,
+        available: u64,
+    },
+    #[error("Invalid transaction")]
+    QFCInvalidTransaction,
 
-impl std::fmt::Display for QFCError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            QFCError::InsufficientBalance { account_id, required, available } => {
-                write!(f, "Account {} has insufficient balance. Required: {}, Available: {}", account_id, required, available)
-            }
-            QFCError::InvalidTransaction => write!(f, "Invalid transaction"),
-        }
-    }
-}
-
-impl std::error::Error for QFCError {}
-
-#[derive(Error, Debug)]
-pub enum BridgeError {
     #[error("Invalid transaction: {0}")]
-    InvalidTransaction(String),
+    BridgeInvalidTransaction(String),
     #[error("Proof verification failed: {0}")]
-    ProofVerificationFailed(String),
+    BridgeProofVerificationFailed(String),
     #[error("Chain connection error: {0}")]
-    ChainConnectionError(String),
+    BridgeChainConnectionError(String),
     #[error("Retry failed: {0}")]
-    RetryFailed(String),
+    BridgeRetryFailed(String),
     #[error("Configuration error: {0}")]
-    ConfigError(String),
+    BridgeConfigError(String),
+
+    #[error("Wallet not found: {0}")]
+    StateWalletNotFound(String),
+    #[error("Invalid transaction: {0}")]
+    StateInvalidTransaction(Hash),
+    #[error("Lock error")]
+    StateLockError,
+    #[error("Trie error: {0}")]
+    StateTrieError(String),
+    #[error("Serialization error: {0}")]
+    StateSerializationError(String),
+    #[error("Deserialization error: {0}")]
+    StateDeserializationError(String),
 }
 
-#[derive(Debug, Clone)]
-pub enum StateError {
-    WalletNotFound(String),
-    InvalidTransaction(Hash),
-    LockError,
-    TrieError(String),
-    SerializationError(String),
-    DeserializationError(String),
-}
-
-// --- QRNG Implementation Upgrade ---
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct QRNGConfig {
-    pub buffer_size: usize,
-    pub min_entropy_quality: f64,
-}
-
-#[derive(Debug)]
-pub struct EntropyBuffer {
-    pub buffer: Vec<u8>,
-    pub last_refresh: DateTime<Utc>,
-}
-
-#[derive(Debug)]
-pub struct QRNGBackend {
-    devices: Vec<Box<dyn QuantumDevice>>,
-    fallback: HighQualitySoftwareQRNG,
-}
-
-#[derive(Debug)]
-pub struct HighQualitySoftwareQRNG;
-
-impl HighQualitySoftwareQRNG {
-    pub fn generate_entropy(&self, size: usize) -> Result<Vec<u8>, QRNGError> {
-        let mut rng = rand::rngs::OsRng; // Use operating system's random number generator
-        let mut entropy: Vec<u8> = vec![0; size];
-        rng.fill_bytes(&mut entropy); // Fill with high-quality random bytes
-        Ok(entropy)
-    }
-}
-
-#[derive(Debug)]
-pub struct QuantumRNG {
-    backend: Arc<RwLock<QRNGBackend>>,
-    buffer: Arc<RwLock<EntropyBuffer>>,
-    analyzer: Arc<RwLock<EntropyAnalyzer>>,
-    on_chain: Arc<RwLock<OnChainQRNG>>,
-    config: QRNGConfig,
-}
-
-impl QuantumRNG {
-    pub async fn new(config: QRNGConfig) -> Result<Self, QRNGError> {
-        let backend = Arc::new(RwLock::new(QRNGBackend::new()));
-        let buffer = Arc::new(RwLock::new(EntropyBuffer::new(config.buffer_size)));
-        let analyzer = Arc::new(RwLock::new(EntropyAnalyzer::new()));
-        let on_chain = Arc::new(RwLock::new(OnChainQRNG));
-
-        let mut qrng = Self {
-            backend,
-            buffer,
-            analyzer,
-            on_chain,
-            config,
-        };
-
-        qrng.refresh_entropy_buffer().await?;
-        Ok(qrng)
+// Example usage in code
+fn example_function() -> Result<(), SystemError> {
+    // Simulated error handling
+    let required_balance = 100;
+    let available_balance = 50;
+    if available_balance < required_balance {
+        return Err(SystemError::QFCInsufficientBalance {
+            account_id: "user123".to_string(),
+            required: required_balance,
+            available: available_balance,
+        });
     }
 
-    async fn refresh_entropy_buffer(&self) -> Result<(), QRNGError> {
-        let backend = self.backend.read().await;
-        let mut new_entropy = Vec::new();
-
-        for device in &backend.devices {
-            match device.generate_entropy(self.config.buffer_size) {
-                Ok(entropy) => {
-                    new_entropy = entropy;
-                    break;
-                }
-                Err(e) => warn!("Entropy source failed: {}", e),
-            }
-        }
-
-        if new_entropy.is_empty() {
-            new_entropy = backend.fallback.generate_entropy(self.config.buffer_size)?;
-        }
-
-        let mut buffer = self.buffer.write().await;
-        buffer.buffer = new_entropy;
-        buffer.last_refresh = Utc::now();
-
-        let analyzer = self.analyzer.read().await;
-        analyzer.analyze_entropy(&buffer.buffer)?;
-
-        // Ensure entropy quality meets minimum requirements
-        if analyzer.shannon_entropy < self.config.min_entropy_quality {
-            return Err(QRNGError::AnalysisError("Insufficient entropy quality".into()));
-        }
-
-        let on_chain = self.on_chain.read().await;
-        on_chain.validate_entropy(&buffer.buffer)?;
-
-        Ok(())
-    }
+    Ok(())
 }
 
 // --- Entropy Metrics Implementation ---
