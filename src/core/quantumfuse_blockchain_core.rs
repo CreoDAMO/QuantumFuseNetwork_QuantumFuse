@@ -1,5 +1,6 @@
 // Required imports
 use std::collections::{HashMap, HashSet, BinaryHeap};
+use std::f64::consts::LN_2;
 use std::sync::Arc;
 use tokio::sync::{RwLock, mpsc, broadcast};
 use chrono::{DateTime, Utc, Duration};
