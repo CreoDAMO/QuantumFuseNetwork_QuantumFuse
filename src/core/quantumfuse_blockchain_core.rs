@@ -1,7 +1,13 @@
 // Required imports
-use std::collections::{HashMap, HashSet, BinaryHeap};
-use std::f64::consts::LN_2;
-use std::sync::Arc;
+// --- Core Dependencies ---
+use std::{
+    collections::{HashMap, HashSet, BinaryHeap},
+    sync::{Arc, Mutex},
+    fs::File,
+    io::Write,
+    time::Instant,
+    f64::consts::LN_2
+};
 use tokio::sync::{RwLock, mpsc, broadcast};
 use chrono::{DateTime, Utc, Duration};
 use serde::{Serialize, Deserialize};
@@ -9,44 +15,76 @@ use blake3::{Hash, Hasher};
 use thiserror::Error;
 use tracing::{info, warn, error, instrument};
 use uuid::Uuid;
-use rand::RngCore;
+use rand::{RngCore, thread_rng};
 use itertools::Itertools;
-use ethers::prelude::*;
-use solana_client::rpc_client::RpcClient;
-use rust_bert::pipelines::sentiment::{SentimentModel, SentimentPolarity}; // For AI
-use zk_proof_systems::groth16::{
-    create_random_proof, generate_random_parameters, prepare_verifying_key, verify_proof,
-    PreparedVerifyingKey, Proof, VerifyingKey,
+use hex::ToHex;
+
+// --- Blockchain Interoperability ---
+use ethers::{
+    prelude::*,
+    core::types::TransactionRequest
 };
-use rand_core::OsRng; // For ZK-proofs
-use std::fs::File;
-use std::io::Write;
-use std::time::Instant;
-use serde_json::json;
+use solana_client::rpc_client::RpcClient;
 use cosmwasm_std::{
-    entry_point, to_binary, BankMsg, CosmosMsg, DepsMut, Env, MessageInfo, Response, 
+    entry_point, to_binary, BankMsg, CosmosMsg, DepsMut, Env, MessageInfo, Response,
     StdResult, Uint128, Storage, StdError, Addr,
 };
+use ibc::{
+    core::ics04_channel::packet::Packet,
+    applications::transfer::{PrefixedDenom, MsgTransfer}
+};
+
+// --- Cryptography & ZKP ---
+use pqcrypto_dilithium::dilithium2::{self, PublicKey, SecretKey, Signature};
+use zk_proof_systems::{
+    groth16::{
+        create_random_proof, generate_random_parameters, prepare_verifying_key, verify_proof,
+        PreparedVerifyingKey, Proof, VerifyingKey
+    },
+    bellman::{Circuit, ConstraintSystem, SynthesisError},
+    bls12_381::{Bls12, Scalar}
+};
+use halo2_proofs::{
+    circuit::{Circuit as Halo2Circuit, Layouter, Value},
+    plonk::{Advice, Column, ConstraintSystem as Halo2CS, Error, Instance},
+};
+use rand_core::OsRng;
+
+// --- AI/ML Integration ---
+use rust_bert::pipelines::sentiment::{SentimentModel, SentimentPolarity};
+use linfa::{
+    prelude::*,
+    dataset::Dataset,
+    traits::Fit
+};
+use linfa_anomaly::Dbscan;
+
+// --- Network & Storage ---
 use datachannel::{Connection, ConnectionConfig, DataChannelHandler};
-use std::sync::Mutex;
 use patricia_trie::{TrieDBMut, TrieMut, TrieDB};
 use memory_db::MemoryDB;
 use keccak_hasher::KeccakHasher;
-use axum::{routing::{get, post}, Router, Json, Extension};
+use evm::{
+    executor::StackExecutor,
+    backend::MemoryBackend,
+    Config
+};
+
+// --- Web & API ---
+use axum::{
+    routing::{get, post},
+    Router, Json, Extension
+};
+use serde_json::json;
+
+// --- Substrate Framework ---
 use frame_support::{decl_module, decl_storage, decl_event, dispatch};
 use sp_runtime::traits::Zero;
 use sp_std::vec::Vec;
-use pqcrypto_dilithium::dilithium2::{self, PublicKey, SecretKey, Signature};
-use halo2_proofs::{
-    circuit::{Circuit, Layouter, Value},
-    plonk::{Advice, Column, ConstraintSystem, Error, Instance},
-};
-use linfa::prelude::*;
-use linfa::dataset::Dataset;
-use linfa_anomaly::Dbscan;
-use ibc::core::ics04_channel::packet::Packet;
-use ibc::applications::transfer::{PrefixedDenom, MsgTransfer};
-use evm::{executor::StackExecutor, Config, backend::MemoryBackend};
+
+// --- Additional Utilities ---
+use async_trait::async_trait;
+use anyhow::{Context, Result as AnyResult};
 
 // --- Unified Error Handling Definitions ---
 
@@ -223,159 +261,279 @@ pub enum EntropyError {
     EmptyData,
 }
 
-// --- AI// --- AI-Powered Quantum Governance System ---
-
-#[derive(Debug)]
-pub struct QuantumGovernance {
-    proposals: RwLock<HashMap<String, GovernanceProposal>>,
-    ai_engine: AIEngine,
-    zk_proof_generator: ZKProofGenerator,
-}
+// --------------------------
+// Core Governance Structures
+// --------------------------
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GovernanceProposal {
     pub id: String,
     pub proposer: String,
     pub description: String,
-    pub contract_type: ExecutionEngine, // CosmWasm or EVM
-    pub contract_code: Vec<u8>, // Wasm bytecode or EVM bytecode
+    pub contract_type: ExecutionEngine,
+    pub contract_code_hash: [u8; 32],
     pub votes_for: u64,
     pub votes_against: u64,
-    pub qfc_staked: Uint128, // QFC staked for proposal
+    pub qfc_staked: Uint128,
+    pub risk_score: f64,
+    pub status: ProposalStatus,
+    pub voters: Vec<String>, // Track voter addresses
 }
 
+#[derive(Debug)]
+pub struct QuantumGovernance {
+    proposals: Arc<RwLock<HashMap<String, GovernanceProposal>>>,
+    ai_engine: SentimentModel,
+    zk_params: groth16::Parameters<Bls12>,
+    state: Arc<StateManager>,
+    min_stake: Uint128,
+}
+
+// --------------------------
+// ZK Voting Circuit
+// --------------------------
+
+#[derive(Clone)]
+struct VotingCircuit {
+    // Secret inputs
+    voter_secret: Option<Scalar>,
+    stake_secret: Option<Scalar>,
+    
+    // Public inputs
+    min_stake: Scalar,
+    proposal_active: Scalar,
+}
+
+impl Circuit<Scalar> for VotingCircuit {
+    fn synthesize<CS: ConstraintSystem<Scalar>>(self, cs: &mut CS) -> Result<(), SynthesisError> {
+        // Verify minimum stake requirement
+        let stake = cs.alloc(|| "stake", || 
+            self.stake_secret.ok_or(SynthesisError::AssignmentMissing)
+        )?;
+        
+        cs.enforce(
+            || "stake_requirement",
+            |lc| lc + stake,
+            |lc| lc,
+            |lc| lc + CS::one() * self.min_stake,
+        );
+
+        // Verify proposal is active
+        let is_active = cs.alloc_input(|| "is_active", || 
+            Ok(self.proposal_active)
+        )?;
+
+        cs.enforce(
+            || "active_proposal",
+            |lc| lc + is_active,
+            |lc| lc,
+            |lc| lc + CS::one(),
+        );
+
+        Ok(())
+    }
+}
+
+// --------------------------
+// Governance Implementation
+// --------------------------
+
 impl QuantumGovernance {
-    pub fn new() -> Self {
+    pub fn new(state: Arc<StateManager>) -> Self {
+        let ai_engine = SentimentModel::new(Default::default())
+            .expect("AI model initialization failed");
+        
+        // Generate ZK parameters once during initialization
+        let zk_params = {
+            let circuit = VotingCircuit {
+                voter_secret: None,
+                stake_secret: None,
+                min_stake: Scalar::zero(),
+                proposal_active: Scalar::zero(),
+            };
+            groth16::generate_random_parameters(circuit, &mut rand::thread_rng())
+                .expect("ZK parameters generation failed")
+        };
+
         Self {
-            proposals: RwLock::new(HashMap::new()),
-            ai_engine: AIEngine::new(),
-            zk_proof_generator: ZKProofGenerator::new(),
+            proposals: Arc::new(RwLock::new(HashMap::new())),
+            ai_engine,
+            zk_params,
+            state,
+            min_stake: Uint128::from(1000u128),
         }
     }
 
-    pub async fn submit_proposal(&self, proposer: &str, description: &str, contract_type: ExecutionEngine, contract_code: Vec<u8>, qfc_staked: Uint128) -> Result<String, String> {
-        if qfc_staked < Uint128::from(100u128) { // Example threshold
-            return Err("Minimum QFC stake required".to_string());
+    pub async fn submit_proposal(
+        &self,
+        proposer: &str,
+        description: &str,
+        contract_type: ExecutionEngine,
+        contract_code: Vec<u8>,
+        qfc_staked: Uint128,
+    ) -> Result<String, GovernanceError> {
+        // Validate stake amount
+        if qfc_staked < self.min_stake {
+            return Err(GovernanceError::InsufficientStake);
         }
 
-        let id = Uuid::new_v4().to_string();
-        let (sentiment, risk_score) = self.ai_engine.analyze_proposal(description);
+        // Lock staked funds
+        self.state.lock_funds(proposer, qfc_staked).await?;
+
+        // AI analysis
+        let (sentiment, risk_score) = self.analyze_description(description).await?;
         
+        // Hash and store contract code
+        let mut hasher = Blake3Hasher::new();
+        hasher.update(&contract_code);
+        let code_hash = hasher.finalize();
+        self.state.store_contract(code_hash.as_bytes(), contract_code).await?;
+
         let proposal = GovernanceProposal {
-            id: id.clone(),
+            id: Uuid::new_v4().to_string(),
             proposer: proposer.to_string(),
             description: description.to_string(),
             contract_type,
-            contract_code,
+            contract_code_hash: *code_hash.as_bytes(),
             votes_for: 0,
             votes_against: 0,
             qfc_staked,
+            risk_score,
+            status: ProposalStatus::Active,
+            voters: Vec::new(),
         };
-        self.proposals.write().await.insert(id.clone(), proposal);
-        Ok(id)
+
+        self.proposals.write().await.insert(proposal.id.clone(), proposal);
+        Ok(proposal.id)
     }
 
-    // Voting logic remains the same
-}
+    async fn analyze_description(&self, text: &str) -> Result<(SentimentPolarity, f64), GovernanceError> {
+        let sentiments = self.ai_engine.predict(&[text])
+            .map_err(|e| GovernanceError::AiAnalysis(e.to_string()))?;
+        
+        let sentiment = sentiments.first()
+            .ok_or(GovernanceError::AiAnalysis("No sentiment results".into()))?;
 
-// --- AI Engine ---
+        let risk_score = match sentiment.polarity {
+            SentimentPolarity::Positive => 0.2,
+            SentimentPolarity::Neutral => 0.5,
+            SentimentPolarity::Negative => 0.8,
+        };
 
-pub struct AIEngine {
-    sentiment_model: SentimentModel,
-}
+        Ok((sentiment.polarity.clone(), risk_score))
+    }
 
-impl AIEngine {
-    pub fn new() -> Self {
-        Self {
-            sentiment_model: SentimentModel::new(Default::default()).expect("Failed to initialize sentiment model"),
+    pub async fn vote(
+        &self,
+        proposal_id: &str,
+        voter: &str,
+        vote_type: VoteType,
+        secret: &VerifiableSecret,
+    ) -> Result<(), GovernanceError> {
+        let mut proposals = self.proposals.write().await;
+        let proposal = proposals.get_mut(proposal_id)
+            .ok_or(GovernanceError::ProposalNotFound)?;
+
+        // Validate proposal status
+        if proposal.status != ProposalStatus::Active {
+            return Err(GovernanceError::InactiveProposal);
         }
-    }
 
-    pub fn analyze_proposal(&self, proposal: &str) -> (SentimentPolarity, f64) {
-        match self.sentiment_model.predict(&[proposal]) {
-            Ok(sentiment) => {
-                let risk_score = match sentiment[0] {
-                    SentimentPolarity::Positive => 0.2,
-                    SentimentPolarity::Neutral => 0.5,
-                    SentimentPolarity::Negative => 0.8,
-                };
-                (sentiment[0].clone(), risk_score)
-            },
-            Err(_) => (SentimentPolarity::Neutral, 0.5), // Default in case of error
+        // Prevent double voting
+        if proposal.voters.contains(&voter.to_string()) {
+            return Err(GovernanceError::DuplicateVote);
         }
+
+        // Generate ZK proof
+        let (proof, public_inputs) = self.generate_vote_proof(voter, secret, proposal).await?;
+
+        // Verify proof
+        groth16::verify_proof(
+            &self.zk_params.verifying_key(),
+            &proof,
+            &public_inputs,
+        ).map_err(|e| GovernanceError::ProofVerification(e.to_string()))?;
+
+        // Update vote counts
+        match vote_type {
+            VoteType::For => proposal.votes_for += 1,
+            VoteType::Against => proposal.votes_against += 1,
+        }
+
+        proposal.voters.push(voter.to_string());
+        Ok(())
     }
 
-    pub fn detect_bottlenecks(&self, tps: f64) -> String {
-        if tps < 1000.0 {
-            "Network congestion".to_string()
+    async fn generate_vote_proof(
+        &self,
+        voter: &str,
+        secret: &VerifiableSecret,
+        proposal: &GovernanceProposal,
+    ) -> Result<(groth16::Proof<Bls12>, Vec<Scalar>), GovernanceError> {
+        let stake = self.state.get_stake(voter).await?;
+        
+        let circuit = VotingCircuit {
+            voter_secret: Some(secret.derive_scalar()),
+            stake_secret: Some(Scalar::from(stake.u128())),
+            min_stake: Scalar::from(self.min_stake.u128()),
+            proposal_active: Scalar::from(proposal.is_active() as u64),
+        };
+
+        let public_inputs = vec![
+            Scalar::from(proposal.is_active() as u64),
+            Scalar::from(self.min_stake.u128()),
+        ];
+
+        groth16::create_random_proof(circuit, &self.zk_params, &mut rand::thread_rng())
+            .map_err(|e| GovernanceError::ProofGeneration(e.to_string()))
+            .map(|proof| (proof, public_inputs))
+    }
+
+    pub async fn finalize_proposal(&self, proposal_id: &str) -> Result<(), GovernanceError> {
+        let mut proposals = self.proposals.write().await;
+        let proposal = proposals.get_mut(proposal_id)
+            .ok_or(GovernanceError::ProposalNotFound)?;
+
+        let threshold = match proposal.risk_score {
+            r if r >= 0.7 => 0.66,
+            r if r >= 0.4 => 0.51,
+            _ => 0.34
+        };
+
+        let total_votes = proposal.votes_for + proposal.votes_against;
+        let approval_rate = proposal.votes_for as f64 / total_votes as f64;
+
+        proposal.status = if approval_rate >= threshold {
+            ProposalStatus::Approved
         } else {
-            "No bottlenecks detected".to_string()
+            ProposalStatus::Rejected
+        };
+
+        if proposal.status == ProposalStatus::Approved {
+            self.execute_contract(proposal).await?;
         }
-    }
-}
 
-// --- AI-Powered Fraud Detection ---
-
-#[derive(Serialize, Deserialize, Clone, Debug)]
-pub struct TransactionRecord {
-    pub tx_id: String,
-    pub sender: String,
-    pub recipient: String,
-    pub amount: Uint128,
-    pub timestamp: u64,
-    pub transaction_type: String, // e.g., "transfer", "payment", etc.
-    pub status: String, // e.g., "pending", "completed", "failed"
-}
-
-pub fn analyze_fraud(
-    transactions: Vec<TransactionRecord>,
-) -> Result<bool, FraudError> {
-    let dataset = Dataset::from(transactions.iter().map(|tx| {
-        vec![tx.amount.u128() as f64, tx.transaction_type.len() as f64] // Include more features for analysis
-    }));
-
-    let model = Dbscan::params(2.0, 2)
-        .transform(dataset)
-        .unwrap();
-
-    if model.predictions().contains(&-1) {
-        return Err(FraudError::FraudulentTransaction);
+        Ok(())
     }
 
-    Ok(true)
-}
+    async fn execute_contract(&self, proposal: &GovernanceProposal) -> Result<(), GovernanceError> {
+        let code = self.state.get_contract(proposal.contract_code_hash)
+            .await?
+            .ok_or(GovernanceError::ContractNotFound)?;
 
-// --- ZK Proof Generator ---
-pub struct ZKProofGenerator {
-    params: VerifyingKey,
-    pvk: PreparedVerifyingKey,
-}
-
-impl ZKProofGenerator {
-    pub fn new() -> Self {
-        let rng = &mut OsRng;
-        let params = generate_random_parameters(10, rng).unwrap(); // 10 is a sample number, adjust as needed
-        let pvk = prepare_verifying_key(&params);
-
-        Self {
-            params,
-            pvk,
+        match proposal.contract_type {
+            ExecutionEngine::CosmWasm => {
+                WasmExecutor::new()
+                    .execute(&code)
+                    .await
+                    .map_err(|e| GovernanceError::ExecutionFailure(e.to_string()))
+            }
+            ExecutionEngine::EVM => {
+                EvmExecutor::new()
+                    .deploy(code)
+                    .map_err(|e| GovernanceError::ExecutionFailure(e.to_string()))
+            }
         }
-    }
-
-    pub fn generate_proof(&self, voter_id: &str) -> Result<Proof, String> {
-        let rng = &mut OsRng;
-        // Placeholder - replace with actual logic to generate inputs for the proof
-        let inputs = vec![1u64; 10]; // Example inputs
-        create_random_proof(&self.params, &inputs, rng)
-            .map_err(|e| e.to_string())
-    }
-
-    pub fn verify_proof(&self, proof: &Proof) -> bool {
-        // Placeholder - replace with actual logic to generate inputs for the proof
-        let inputs = vec![1u64; 10]; // Example inputs
-
-        verify_proof(&self.pvk, proof, &inputs).unwrap()
     }
 }
 
@@ -2081,82 +2239,6 @@ pub fn bridge_nft(
         .add_attribute("action", "nft_bridge")
         .add_attribute("recipient", msg.recipient))
 }
-
-// --- Quantum Governance Implementation ---
-
-#[derive(Serialize, Deserialize, Clone, Debug)]
-pub struct GovernanceProposal {
-    pub id: String,
-    pub proposer: String,
-    pub description: String,
-    pub contract_type: ExecutionEngine, // CosmWasm or EVM
-    pub contract_code: Vec<u8>, // Wasm bytecode or EVM bytecode
-    pub votes_for: u64,
-    pub votes_against: u64,
-    pub qfc_staked: Uint128, // QFC staked for proposal
-}
-
-#[derive(Serialize, Deserialize, Clone, Debug)]
-pub enum VoteType {
-    For,
-    Against,
-}
-
-impl QuantumGovernance {
-    /// Submits a new governance proposal.
-    pub async fn submit_proposal(
-        &self,
-        proposer: &str,
-        description: &str,
-        contract_type: ExecutionEngine,
-        contract_code: Vec<u8>,
-        qfc_staked: Uint128,
-    ) -> String {
-        let id = Uuid::new_v4().to_string();
-        let (sentiment, risk_score) = self.ai_engine.analyze_proposal(description);
-
-        // Create the proposal
-        let proposal = GovernanceProposal {
-            id: id.clone(),
-            proposer: proposer.to_string(),
-            description: description.to_string(),
-            contract_type,
-            contract_code,
-            votes_for: 0,
-            votes_against: 0,
-            qfc_staked,
-        };
-
-        // Store the proposal
-        self.proposals.write().await.insert(id.clone(), proposal);
-        id
-    }
-
-    /// Casts a vote on a governance proposal.
-    pub async fn vote(
-        &self,
-        proposal_id: &str,
-        voter_id: &str,
-        vote_type: VoteType,
-    ) -> Result<(), String> {
-        let mut proposals = self.proposals.write().await;
-        let proposal = proposals.get_mut(proposal_id).ok_or("Proposal not found")?;
-
-        // Generate and verify the zero-knowledge proof
-        let proof = self.zk_proof_generator.generate_proof(voter_id)?;
-        if !self.zk_proof_generator.verify_proof(&proof) {
-            return Err("Invalid proof, vote rejected.".to_string());
-        }
-
-        // Update the vote counts
-        match vote_type {
-            VoteType::For => proposal.votes_for += 1,
-            VoteType::Against => proposal.votes_against += 1,
-        }
-        Ok(())
-    }
-}
-
 
 // --- Main Entry Point ---
 
