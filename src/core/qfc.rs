@@ -483,13 +483,13 @@ impl QuantumMempool {
 
         // Priority based on quantum proof-of-work
         let priority = self.calculate_priority(&tx).await?;
-        
+
         let mut pool = self.transactions.write().await;
         pool.insert(priority, tx);
-        
+
         self.bloom_filter.insert(tx.hash());
         self.qsig_cache.put(tx.signature, ());
-        
+
         Ok(())
     }
 
@@ -497,7 +497,7 @@ impl QuantumMempool {
         // Hybrid priority using both economic factors and quantum metrics
         let economic_weight = tx.fee * tx.qos_metric;
         let quantum_weight = tx.quantum_proof.difficulty();
-        
+
         Ok((economic_weight as f64 * quantum_weight).sqrt())
     }
 }
@@ -519,7 +519,7 @@ impl QuantumVM {
     ) -> Result<ExecutionResult, VMError> {
         // Quantum state initialization
         let mut quantum_state = QrispState::new();
-        
+
         // Hybrid execution flow
         let result = match contract.runtime_type {
             RuntimeType::Wasm => {
@@ -566,15 +566,15 @@ impl QuantumP2P {
         // Quantum-secure block propagation
         let block_hash = block.hash();
         let qkd_channel = self.qkd_channels.get_channel(block.validator())?;
-        
+
         // Hybrid encryption for block transmission
         let session_key = qkd_channel.establish_session().await?;
         let encrypted_block = session_key.encrypt(block.serialize())?;
-        
+
         // Entangled validation propagation
         let validation_packet = self.create_validation_packet(block_hash)?;
         let entangled_nodes = self.validator_set.get_entangled_group()?;
-        
+
         self.transport.quantum_send(
             encrypted_block,
             validation_packet,
@@ -637,10 +637,216 @@ impl QuantumCryptoVault {
         // Zero-knowledge proof of valid signature
         let zk_proof = self.create_signature_proof(tx).await?;
         tx.zk_proof = Some(zk_proof);
-        
+
         Ok(())
     }
 }
+
+// --- AI-Powered Fraud Detection ---
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct TransactionRecord {
+    pub tx_id: String,
+    pub sender: String,
+    pub recipient: String,
+    pub amount: Uint128,
+    pub timestamp: u64,
+}
+
+pub fn analyze_fraud(
+    transactions: Vec<TransactionRecord>,
+) -> Result<bool, FraudError> {
+    let dataset = Dataset::from(transactions.iter().map(|tx| vec![tx.amount.u128() as f64]));
+
+    let model = Dbscan::params(2.0, 2)
+        .transform(dataset)
+        .unwrap();
+
+    if model.predictions().contains(&-1) {
+        return Err(FraudError::FraudulentTransaction);
+    }
+
+    Ok(true)
+}
+
+#[derive(Debug, Error)]
+pub enum FraudError {
+    #[error("Fraudulent transaction detected")]
+    FraudulentTransaction,
+}
+
+// --- QUSD Stablecoin Implementation ---
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct MintQUSD {
+    pub sender: String,
+    pub qfc_amount: Uint128,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct BurnQUSD {
+    pub recipient: String,
+    pub qusd_amount: Uint128,
+}
+
+pub struct QUSD {
+    pub total_supply: Uint128,
+    pub reserve_ratio: Uint128, // The ratio of QFC to QUSD
+    pub peg_price: Uint128,      // Price of QUSD in terms of a stable asset
+    pub qfc_reserve: Uint128,    // Total QFC held in reserve
+}
+
+impl QUSD {
+    /// Creates a new QUSD instance with the specified reserve ratio.
+    pub fn new(reserve_ratio: Uint128) -> Self {
+        Self {
+            total_supply: Uint128::zero(),
+            reserve_ratio,
+            peg_price: Uint128::from(1u128), // Initialize peg price to 1
+            qfc_reserve: Uint128::zero(),
+        }
+    }
+
+    /// Mints QUSD based on the amount of QFC provided.
+    pub fn mint(&mut self, qfc_amount: Uint128) -> Result<Uint128, QUSDError> {
+        // Ensure QFC amount is positive
+        if qfc_amount.is_zero() {
+            return Err(QUSDError::InsufficientReserve);
+        }
+
+        // Calculate QUSD minted based on the reserve ratio
+        let qusd_minted = qfc_amount * self.reserve_ratio / Uint128::from(100u128);
+        self.total_supply += qusd_minted;
+        self.qfc_reserve += qfc_amount;
+
+        Ok(qusd_minted)
+    }
+
+    /// Burns QUSD and returns the corresponding QFC amount.
+    pub fn burn(&mut self, qusd_amount: Uint128) -> Result<Uint128, QUSDError> {
+        // Check if there is sufficient supply to burn
+        if qusd_amount > self.total_supply {
+            return Err(QUSDError::InsufficientSupply);
+        }
+
+        // Calculate QFC redeemed based on the reserve ratio
+        let qfc_redeemed = qusd_amount * Uint128::from(100u128) / self.reserve_ratio;
+        self.total_supply -= qusd_amount;
+        self.qfc_reserve -= qfc_redeemed;
+
+        Ok(qfc_redeemed)
+    }
+
+    /// Adjusts the peg price of QUSD based on market conditions.
+    pub fn adjust_peg(&mut self, new_price: Uint128) {
+        self.peg_price = new_price;
+        // Additional logic to manage the peg could be implemented here
+    }
+
+    /// Returns the current supply of QUSD.
+    pub fn current_supply(&self) -> Uint128 {
+        self.total_supply
+    }
+
+    /// Returns the current QFC reserve.
+    pub fn current_qfc_reserve(&self) -> Uint128 {
+        self.qfc_reserve
+    }
+}
+
+/// Errors that can occur in QUSD operations.
+#[derive(Debug, Error)]
+pub enum QUSDError {
+    #[error("Insufficient QFC reserve")]
+    InsufficientReserve,
+    #[error("Insufficient QUSD supply")]
+    InsufficientSupply,
+}
+
+// --- CosmWasm-EVM Integration ---
+
+// Struct for deploying an EVM contract
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct DeployEVMContract {
+    pub bytecode: Vec<u8>,
+}
+
+pub fn deploy_evm_contract(
+    deps: DepsMut,
+    _env: Env,
+    _info: MessageInfo,
+    msg: DeployEVMContract,
+) -> Result<Response, ContractError> {
+    let config = Config::istanbul();
+    let backend = MemoryBackend::default();
+    let mut executor = StackExecutor::new(&config, &backend);
+
+    let address = executor.create_address();
+    executor.deploy(address, msg.bytecode)?;
+
+    Ok(Response::new()
+        .add_attribute("action", "deploy_evm_contract")
+        .add_attribute("address", format!("{:?}", address)))
+}
+
+// --- Enhanced Quantum Virtual Machine with Enterprise Features ---
+
+impl QuantumVirtualMachine {
+    pub fn execute_secure(
+        &self,
+        contract: &Contract,
+        hsm_signer: Option<&HsmSigner>
+    ) -> Result<ExecutionResult, VMError> {
+        // Validate contract against compliance rules
+        self.compliance_checker.validate_contract(contract)?;
+
+        // Execute with HSM-based signing if available
+        let result = if let Some(signer) = hsm_signer {
+            self.execute_with_signer(contract, signer)
+        } else {
+            self.execute(contract)
+        }?;
+
+        // Record execution metrics
+        self.telemetry.record_vm_execution(
+            contract.id(),
+            result.gas_used,
+            result.duration
+        );
+
+        Ok(result)
+    }
+}
+
+// --- Quantum Oracles Implementation ---
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct PriceFeed {
+    pub asset: String,
+    pub price: Uint128,
+    pub timestamp: u64,
+    pub signature: Signature,
+}
+
+pub fn submit_price(
+    deps: DepsMut,
+    _env: Env,
+    _info: MessageInfo,
+    msg: PriceFeed,
+) -> Result<Response, ContractError> {
+    let pub_key = PUBKEY.load(deps.storage)?;
+
+    // Verify signature using Dilithium PQC
+    if !pub_key.verify(&msg.price.to_be_bytes(), &msg.signature) {
+        return Err(ContractError::InvalidSignature {});
+    }
+
+    // Save price feed to storage
+    PRICES.save(deps.storage, &msg.asset, &msg)?;
+
+    Ok(Response::new().add_attribute("action", "price_update"))
+}
+
 
 // --- Quantum Circuit Optimization ---
 pub fn optimize_circuit(circuit: &mut QuantumCircuit) {
