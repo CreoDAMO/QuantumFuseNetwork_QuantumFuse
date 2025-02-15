@@ -1167,7 +1167,6 @@ pub fn submit_price(
     Ok(Response::new().add_attribute("action", "price_update"))
 }
 
-
 // --- Quantum Circuit Optimization ---
 pub fn optimize_circuit(circuit: &mut QuantumCircuit) {
     // Apply surface code error correction
@@ -2275,3 +2274,197 @@ impl<F: ff::PrimeField> Circuit<F> for QuantumRollupVerifier<F> {
 let verifier = QuantumRollupVerifier { proof: Value::known(42), state_root: Value::known(101) };
 let halo2_verifier = Verifier::new(pvk);
 assert!(halo2_verifier.verify(&proof, &public_inputs).is_ok());
+
+// --- Main Entry Point ---
+
+#[tokio::main]
+async fn main() {
+    let blockchain = Arc::new(QuantumBlockchain::new(BlockchainConfig {
+        shard_config: ShardConfig { min_shards: 4 },
+        consensus_config: ConsensusConfig { consensus_type: "Hybrid".to_string() },
+    }).await.unwrap());
+
+    let ai_engine = AIEngine::new();
+    let qrng = QuantumRNG::new(QRNGConfig {
+        buffer_size: 4096,
+        min_entropy_quality: 0.9,
+    }).await.unwrap();
+    let quantum_governance = QuantumGovernance::new();
+    let quantum_bridge = QuantumBridge::new(
+        "0xQuantumBridge".to_string(),
+        Arc::new(Provider::try_from("https://eth-mainnet.alchemyapi.io/v2/YOUR_KEY").unwrap()),
+        Arc::new(RwLock::new(RpcClient::new("https://api.solana.com"))),
+        Arc::new(RwLock::new(ValidatorSet::default())),
+        Arc::new(RwLock::new(ShardManager::new())),
+        Arc::new(RwLock::new(QKDManager::new())),
+    );
+    let quantum_staking = QuantumStakingPool::new(StakingConfig {
+        min_stake: Uint128::from(100_000u128),
+        emission_rate: Uint128::from(1000u128),
+        epoch_duration: 3600, // 1 hour
+        commission_rate: 0.05,
+    }).await;
+    let quantum_rollups = QuantumRollupVerifier::<Fp>::new();
+    let quantum_fraud_detection = analyze_fraud;
+    let qusd = QUSD::new(Uint128::from(50u128)); // 50% reserve ratio
+    let quantum_evm = deploy_evm_contract;
+    let quantum_oracles = submit_price;
+    let quantum_nft_bridge = bridge_nft;
+
+}
+
+// Integration test...
+
+// --- Comprehensive Test Suite ---
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use proptest::prelude::*;
+    use cosmwasm_std::testing::{mock_dependencies, mock_env, mock_info};
+
+    // Quantum Signatures Test
+    proptest! {
+        #[test]
+        fn test_quantum_signatures(msg in any::<[u8; 32]>()) {
+            let signer = QuantumSigner::new();
+            let sig = signer.sign(&msg);
+            assert!(dilithium5::verify(&msg, &sig, &signer.public_key()));
+        }
+    }
+
+    // Cross-Shard Atomicity Test
+    #[tokio::test]
+    async fn test_cross_shard_atomicity() {
+        let blockchain = QuantumBlockchain::new_test_instance().await;
+        let tx = create_cross_shard_transaction();
+
+        let result = blockchain.process_transaction(tx).await;
+        assert!(result.is_ok());
+
+        let state = blockchain.state_manager.read().await;
+        assert!(state.verify_atomic_commit());
+    }
+
+    // Compliance Checks Test
+    #[tokio::test]
+    async fn test_compliance_checks() {
+        let checker = ComplianceChecker::new_test();
+        let mut tx = Transaction::valid();
+        tx.sender = "sanctioned_address".into();
+
+        assert_eq!(
+            checker.validate_transaction(&tx).await,
+            Err(ComplianceError::SanctionedAddress)
+        );
+    }
+
+    // Quantum Rollup Verification Test
+    #[test]
+    fn test_quantum_rollup_verification() {
+        let verifier = QuantumRollupVerifier::<Fp> {
+            proof: Value::known(42),
+            state_root: Value::known(101),
+        };
+
+        let halo2_verifier = Verifier::new(pvk);
+        assert!(halo2_verifier.verify(&verifier.proof, &public_inputs).is_ok());
+    }
+
+    // Fraud Detection Test
+    #[test]
+    fn test_fraud_detection() {
+        let transactions = vec![
+            TransactionRecord {
+                tx_id: "tx1".to_string(),
+                sender: "user1".to_string(),
+                recipient: "user2".to_string(),
+                amount: Uint128::from(1000u128),
+                timestamp: 1620000000,
+            },
+            TransactionRecord {
+                tx_id: "tx2".to_string(),
+                sender: "user2".to_string(),
+                recipient: "user3".to_string(),
+                amount: Uint128::from(2000u128),
+                timestamp: 1620000001,
+            },
+            TransactionRecord {
+                tx_id: "tx3".to_string(),
+                sender: "user1".to_string(),
+                recipient: "user3".to_string(),
+                amount: Uint128::from(500u128),
+                timestamp: 1620000002,
+            },
+        ];
+
+        assert!(analyze_fraud(transactions).is_ok());
+    }
+
+    // QUSD Minting and Burning Test
+    #[test]
+    fn test_qusd_minting_and_burning() {
+        let mut qusd = QUSD::new(Uint128::from(50u128));
+        assert_eq!(qusd.mint(Uint128::from(1000u128)).unwrap(), Uint128::from(500u128));
+        assert_eq!(qusd.burn(Uint128::from(200u128)).unwrap(), Uint128::from(400u128));
+        assert_eq!(qusd.total_supply, Uint128::from(300u128));
+        assert_eq!(qusd.qfc_reserve, Uint128::from(600u128));
+    }
+
+    // EVM Contract Deployment Test
+    #[test]
+    fn test_evm_contract_deployment() {
+        let mut deps = mock_dependencies();
+        let info = mock_info("deployer", &[]);
+        let msg = DeployEVMContract {
+            bytecode: vec![0x61, 0x00, 0x56],
+        };
+
+        let res = deploy_evm_contract(deps.as_mut(), mock_env(), info, msg).unwrap();
+        assert_eq!(
+            res.attributes,
+            vec![
+                ("action".to_string(), "deploy_evm_contract".to_string()),
+                ("address".to_string(), "0x0000000000000000000000000000000000000000".to_string())
+            ]
+        );
+    }
+
+    // Quantum Oracle Price Submission Test
+    #[test]
+    fn test_quantum_oracle_price_submission() {
+        let mut deps = mock_dependencies();
+        let info = mock_info("oracle_provider", &[]);
+        let msg = PriceFeed {
+            asset: "BTC".to_string(),
+            price: Uint128::from(50000u128),
+            timestamp: 1620000000,
+            signature: dilithium2::sign(b"50000", &dilithium2::generate_keypair().0),
+        };
+
+        let res = submit_price(deps.as_mut(), mock_env(), info, msg).unwrap();
+        assert_eq!(res.attributes, vec![("action".to_string(), "price_update".to_string())]);
+    }
+
+    // NFT Bridge Test
+    #[test]
+    fn test_nft_bridge() {
+        let mut deps = mock_dependencies();
+        let info = mock_info("nft_owner", &[]);
+        let msg = NFTTransfer {
+            nft_id: "nft1".to_string(),
+            sender: "nft_owner".to_string(),
+            recipient: "recipient".to_string(),
+            metadata_hash: "abc123".to_string(),
+        };
+
+        let res = bridge_nft(deps.as_mut(), mock_env(), info, msg).unwrap();
+        assert_eq!(
+            res.attributes,
+            vec![
+                ("action".to_string(), "nft_bridge".to_string()),
+                ("recipient".to_string(), "recipient".to_string())
+            ]
+        );
+    }
+}
