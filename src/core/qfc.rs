@@ -1716,6 +1716,37 @@ impl WrappedQFC {
     }
 }
 
+// --- NFT Bridge Implementation ---
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct NFTTransfer {
+    pub nft_id: String,
+    pub sender: String,
+    pub recipient: String,
+    pub metadata_hash: String,
+}
+
+pub fn bridge_nft(
+    deps: DepsMut,
+    _env: Env,
+    _info: MessageInfo,
+    msg: NFTTransfer,
+) -> Result<Response, ContractError> {
+    // Verify NFT metadata integrity using BLAKE3
+    let computed_hash = blake3_hash(msg.metadata_hash.as_bytes()).to_hex();
+
+    if computed_hash != msg.metadata_hash {
+        return Err(ContractError::InvalidMetadata {});
+    }
+
+    // Save NFT transfer details to storage
+    NFTS.save(deps.storage, &msg.nft_id, &msg)?;
+
+    Ok(Response::new()
+        .add_attribute("action", "nft_bridge")
+        .add_attribute("recipient", msg.recipient))
+}
+
 // --- Advanced Quantum Staking Models ---
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
